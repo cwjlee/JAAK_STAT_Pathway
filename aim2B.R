@@ -74,9 +74,6 @@ BC <- ordinate(physeq = dysautonomia_final, method = "PCoA", distance = "bray")
 BC_plot = plot_ordination(dysautonomia_final, BC, color = "FD.severity", shape = "Sex", title = "Bray-Curtis Plot")
 print(BC_plot)
 
-GP.ord <- ordinate(GP1, "NMDS", "bray")
-p1 = plot_ordination(GP1, GP.ord, type="taxa", color="Phylum", title="taxa")
-print(p1)
 
 ##### 2B-6 Perform statistical analysis for beta diversity analysis using R #####
 
