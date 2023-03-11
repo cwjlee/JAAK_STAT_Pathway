@@ -1,0 +1,144 @@
+#!/bin/bash
+#Copy new metadata file to server
+scp new_metadata.tsv root@10.19.139.122:/data/dysautonomia/re-run
+scp manifest.tsv root@10.19.139.122:/data/dysautonomia/re-run
+
+#Create directory in dysautonomia for re-run
+mkdir /data/dysautonomia/re-run
+cd /data/dysautonomia/re-run
+
+#In detached screen, run demultiplex then denoise, then extract amplicon
+#Activate QIIME2 in screen
+conda activate qiime2-2021.11
+
+#Import and demultiplex data within created working directory
+qiime tools import \
+  --type "SampleData[PairedEndSequencesWithQuality]" \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --input-path ./manifest.tsv \
+  --output-path ./paired_demux_seqs.qza
+
+#Create visualization of demultiplexed samples
+qiime demux summarize \
+  --i-data paired_demux_seqs.qza \
+  --o-visualization paired_demux.qzv
+
+#Determine ASVs with DADA2
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs paired_demux_seqs.qza \
+  --p-trim-left-f 0 \
+  --p-trim-left-r 0 \
+  --p-trunc-len-f 251 \
+  --p-trunc-len-r 251 \
+  --o-representative-sequences rep-seqs.qza \
+  --o-table table.qza \
+  --o-denoising-stats stats-dada2.qza
+
+# Visualize DADA2 stats
+qiime metadata tabulate \
+  --m-input-file stats-dada2.qza \
+  --o-visualization stats.qzv
+
+# Visualize ASVs stats
+qiime feature-table summarize \
+  --i-table table.qza \
+  --o-visualization table.qzv \
+  --m-sample-metadata-file new_metadata.tsv
+  
+qiime feature-table tabulate-seqs \
+  --i-data rep-seqs.qza \
+  --o-visualization rep-seqs.qzv
+
+#Extract amplicon of interest from reference database
+qiime feature-classifier extract-reads \
+  --i-sequences /mnt/datasets/silva_ref_files/silva-138-99-seqs.qza \
+  --p-f-primer GTGCCAGCMGCCGCGGTAA \
+  --p-r-primer GGACTACHVGGGTWTCTAAT \
+  --p-trunc-len 251 \
+  --o-reads ref-seqs-trimmed.qza
+
+#Train classifier with new ref-seq file
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads ref-seqs-trimmed.qza \
+  --i-reference-taxonomy /mnt/datasets/silva_ref_files/silva-138-99-tax.qza \
+  --o-classifier classifier.qza
+
+qiime feature-classifier classify-sklearn \
+  --i-classifier classifier.qza \
+  --i-reads rep-seqs.qza \
+  --o-classification taxonomy.qza
+
+qiime metadata tabulate \
+  --m-input-file taxonomy.qza \
+  --o-visualization taxonomy.qzv
+  
+#Taxonomy barplots
+qiime taxa barplot \
+  --i-table table.qza \
+  --i-taxonomy taxonomy.qza \
+  --m-metadata-file new_metadata.tsv \
+  --o-visualization taxa-bar-plots.qzv
+
+#Remove mitochondria and chloroplast
+qiime taxa filter-table \
+  --i-table table.qza \
+  --i-taxonomy taxonomy.qza \
+  --p-exclude mitochondria,chloroplast \
+  --o-filtered-table table-rmmc.qza
+
+qiime feature-table summarize \
+  --i-table table-rmmc.qza \
+  --m-sample-metadata-file new_metadata.tsv \
+  --o-visualization table-rmmc.qzv
+
+#Generate a tree for phylogenetic diversity analyses
+qiime phylogeny align-to-tree-mafft-fasttree \
+  --i-sequences rep-seqs.qza \
+  --o-alignment aligned-rep-seqs.qza \
+  --o-masked-alignment masked-aligned-rep-seqs.qza \
+  --o-tree unrooted-tree.qza \
+  --o-rooted-tree rooted-tree.qza 
+
+qiime feature-table filter-samples \
+  --i-table table-rmmc.qza \
+  --m-metadata-file new_metadata.tsv \
+  --p-where "[FD.severity]!='NA'" \
+  --o-filtered-table table-rmmcna.qza
+
+qiime feature-table summarize \
+ --i-table table-rmmcna.qza \
+ --m-sample-metadata-file new_metadata.tsv \
+ --o-visualization table-rmmcna.qzv
+
+#Alpha-rarefaction  
+qiime diversity alpha-rarefaction \
+  --i-table table-rmmcna.qza \
+  --i-phylogeny rooted-tree.qza \
+  --p-max-depth 60000 \
+  --m-metadata-file new_metadata.tsv \
+  --o-visualization alpha-rarefaction.qzv
+
+#Export ASV table
+qiime tools export \
+--input-path table-rmmcna.qza \
+--output-path table_rmmcna_export
+
+qiime tools export \
+--input-path rooted-tree.qza \
+--output-path rooted_tree_export
+
+qiime tools export \
+--input-path taxonomy.qza \
+--output-path taxonomy_export
+
+qiime tools export \
+--input-path rep-seqs.qza \
+--output-path rep-seqs_export
+
+biom convert \
+-i table_rmmcna_export/feature-table.biom \
+--to-tsv \
+-o table_rmmcna_export/feature-table.txt
+
+#Transfer files to local directory
+scp -r root@10.19.139.122:/data/dysautonomia/re-run .
